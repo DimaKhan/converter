@@ -5,19 +5,17 @@ namespace App\Controller;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Annotation\Route;
-use Symfony\Contracts\HttpClient\HttpClientInterface;
-use SimpleXMLElement;
+use Symfony\Component\Validator\Constraints\NotBlank;
+use Symfony\Component\Validator\Validation;
 use Symfony\Component\HttpFoundation\Request;
+use App\Utils\Currencies;
+use Symfony\Component\Validator\Constraints as Assert;
+use function Symfony\Component\DependencyInjection\Loader\Configurator\param;
+use Symfony\Component\DependencyInjection\ParameterBag\ParameterBagInterface;
+
 
 class ConverterController extends AbstractController
 {
-    protected $client;
-
-    public function __construct(HttpClientInterface $client)
-    {
-        $this->client = $client;
-    }
-
     /**
      * @Route("/converter", name="converter")
      */
@@ -25,27 +23,39 @@ class ConverterController extends AbstractController
     {
         // Получаем данные POST запроса
         $request = Request::createFromGlobals();
-        $params = $request->toArray();
+        $inputs = $request->toArray();
 
-        // Делаем запрос курсов валют
-        $response = $this->client->request('GET', 'http://www.cbr.ru/scripts/XML_daily.asp');
-        $results = new SimpleXMLElement($response->getContent());
+        $validator = Validation::createValidator();
 
-        // Получаем объект курса валют для исходной суммы
-        $fromCurrency = $results->xpath('//ValCurs/Valute/CharCode[.="'.$params['from'].'"]/parent::*');
+        // Правила валидации для параметров POST запроса
+        $constraints = new Assert\Collection([
+            'from' => [new NotBlank(null, '«From» should not be blank')],
+            'to' => [new NotBlank(null, '«To» should not be blank')],
+            'amount' => [new NotBlank(null, '«Amount» should not be blank')],
+        ]);
 
-        // Получаем объект курса валют для конечной суммы
-        $toCurrency = $results->xpath('//ValCurs/Valute/CharCode[.="'.$params['to'].'"]/parent::*');
+        // Валидация данных POST запроса
+        $violations = $validator->validate($inputs, $constraints);
+        if (count($violations) > 0) {
+            $errors = [];
+            foreach ($violations as $violation) {
+                $errors[] = $violation->getMessage();
+            }
+            // Возвращаем ответ с найденными ошибками во входных параметрах
+            return $this->json([
+                'result' => 'failed',
+                'errors' => $errors,
+            ]);
+        }
 
-        // Вычисляем исходную сумму в рублях
-        $sumInRub = ($fromCurrency[0]->Value * $params['amount']) / $fromCurrency[0]->Nominal;
+        $currencies = new Currencies();
+        // Конвертируем валюту
+        $result = $currencies->convert($inputs['from'], $inputs['to'], $inputs['amount']);
 
-        // Вычисляем сумму в конечной валюте
-        $result = ($sumInRub / $toCurrency[0]->Value) * $toCurrency[0]->Nominal;
-
-        // Возвращаем результат в виде JSON с округлением конечной суммы до 2 знаков
+        // Возвращаем результат конвертации
         return $this->json([
-            'result' => round($result, 2),
+            'result' => 'success',
+            'amount' => $result,
         ]);
     }
 }
